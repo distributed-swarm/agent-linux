@@ -1,7 +1,6 @@
 import os
 import math
-import subprocess
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 
 try:
     import psutil
@@ -21,7 +20,7 @@ def _detect_cpu() -> Dict[str, Any]:
     else:
         total_cores = os.cpu_count() or 1
 
-    # Reserve some cores for the system / Docker overhead
+    # Reserve some cores for the system overhead
     reserved_cores = min(4, max(1, total_cores // 4))
     usable_cores = max(1, total_cores - reserved_cores)
 
@@ -38,100 +37,11 @@ def _detect_cpu() -> Dict[str, Any]:
     }
 
 
-def _parse_nvidia_smi() -> List[Dict[str, Any]]:
-    """
-    Use `nvidia-smi` to detect GPUs and their memory.
-
-    Returns a list of devices:
-      [
-        {
-          "index": 0,
-          "name": "NVIDIA GeForce RTX 3060",
-          "total_memory_bytes": 12486246400
-        },
-        ...
-      ]
-
-    If anything fails, returns [].
-    """
-    try:
-        # Query: name + total memory (MiB), no units, no header
-        cmd = [
-            "nvidia-smi",
-            "--query-gpu=name,memory.total",
-            "--format=csv,noheader,nounits",
-        ]
-        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
-    except Exception:
-        return []
-
-    devices: List[Dict[str, Any]] = []
-    for idx, line in enumerate(out.splitlines()):
-        line = line.strip()
-        if not line:
-            continue
-        # Example line: "NVIDIA GeForce RTX 3060, 12288"
-        parts = [p.strip() for p in line.split(",")]
-        if len(parts) != 2:
-            continue
-        name, mem_str = parts
-        try:
-            mem_mib = float(mem_str)
-        except ValueError:
-            continue
-        total_bytes = int(mem_mib * 1024 * 1024)
-        devices.append(
-            {
-                "index": idx,
-                "name": name,
-                "total_memory_bytes": total_bytes,
-            }
-        )
-    return devices
-
-
-def _detect_gpu() -> Dict[str, Any]:
-    """
-    GPU sizing based on nvidia-smi only.
-
-    We don't care if PyTorch has CUDA or not here; this is purely for:
-      - worker_profile.gpu_present
-      - gpu_count
-      - vram_gb
-      - devices[...]
-
-    If no GPUs are visible to nvidia-smi, we report gpu_present = False.
-    """
-    devices = _parse_nvidia_smi()
-    if not devices:
-        return {
-            "gpu_present": False,
-            "gpu_count": 0,
-            "vram_gb": None,
-            "devices": [],
-            "max_gpu_workers": 0,
-        }
-
-    gpu_count = len(devices)
-    # Use the largest single-device memory as "vram_gb" for routing thresholds
-    max_bytes = max(d.get("total_memory_bytes", 0) for d in devices) or 0
-    vram_gb = max_bytes / float(1024 ** 3) if max_bytes > 0 else 0.0
-
-    # Simple heuristic: assume up to 1 worker per device by default
-    max_gpu_workers = gpu_count
-
-    return {
-        "gpu_present": True,
-        "gpu_count": gpu_count,
-        "vram_gb": round(vram_gb, 2),
-        "devices": devices,
-        "max_gpu_workers": int(max_gpu_workers),
-    }
-
-
 def build_worker_profile() -> Dict[str, Any]:
     """
-    Combined CPU + GPU + worker sizing.
+    CPU-only worker profile for agent-lite.
+    
+    Always reports no GPU present since agent-lite is CPU-only.
 
     Shape is what the controller & UI already expect:
 
@@ -145,9 +55,17 @@ def build_worker_profile() -> Dict[str, Any]:
       }
     """
     cpu_info = _detect_cpu()
-    gpu_info = _detect_gpu()
+    
+    # Agent-lite: Always report no GPU
+    gpu_info = {
+        "gpu_present": False,
+        "gpu_count": 0,
+        "vram_gb": None,
+        "devices": [],
+        "max_gpu_workers": 0,
+    }
 
-    # Total worker limit: use CPU max workers as upper bound for now.
+    # Total worker limit: use CPU max workers as upper bound
     max_total_workers = cpu_info.get("max_cpu_workers", 1)
     if isinstance(max_total_workers, float):
         max_total_workers = int(math.floor(max_total_workers))
