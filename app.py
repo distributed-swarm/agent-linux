@@ -14,6 +14,11 @@ try:
     import psutil
 except ImportError:
     psutil = None
+# Load configuration from agent.env if present
+try:
+    import load_env
+except ImportError:
+    pass  # Optional, will use system env vars
 
 # =========================
 #   INTERNAL CONFIG GENERATOR
