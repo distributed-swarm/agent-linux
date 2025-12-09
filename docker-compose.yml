@@ -1,0 +1,38 @@
+services:
+  # THE BRAIN: 16-Core Controller
+  # Handles ~400 TPS using file-based SQLite
+  controller:
+    image: ghcr.io/distributed-swarm/controller:main
+    container_name: controller
+    restart: always
+    network_mode: host
+    environment:
+      - WEB_CONCURRENCY=16          # The key to utilizing the whole system
+      - LOG_LEVEL=WARNING           # Keep logs clean for speed
+    volumes:
+      - ./data:/app/data            # Persistent data storage
+
+  # THE MUSCLE: Turbo GPU Agent
+  # Configured for 50 threads to maximize throughput
+  agent-gpu:
+    image: ghcr.io/distributed-swarm/agent:main
+    restart: always
+    network_mode: host
+    deploy:
+      replicas: 1 # Scale this up to match your GPU count if needed
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - AGENT_NAME_PREFIX=gpu-turbo
+      # The "Turbo" Settings
+      - CONCURRENCY=50
+      - MAX_JOBS=50
+      - AGENT_CONCURRENCY=50
+      - THREADS=50
+      # Full Capabilities
+      - AGENT_OPS=echo,map_summarize,map_tokenize,map_classify
+      - CONTROLLER_URL=http://localhost:8080
