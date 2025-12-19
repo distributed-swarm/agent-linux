@@ -66,31 +66,36 @@ def _safe_register_builtins():
 
     We support:
       - New style: module has OP_NAME + handle(task: dict)
-      - Old style: module has map_classify(task) / map_summarize(task)
+      - Old style: module has <op>(task)
     """
-    # ---- map_classify ----
-    try:
-        from . import map_classify as mc  # type: ignore
 
-        if hasattr(mc, "OP_NAME") and hasattr(mc, "handle"):
-            register_op(mc.OP_NAME, mc.handle)
-        elif hasattr(mc, "map_classify"):
-            register_op("map_classify", mc.map_classify)  # old-style
-    except Exception:
-        # Don't kill the agent just because one op is broken.
-        pass
+    def _try_register(module_name: str, default_op_name: str):
+        """
+        Attempt to import a module and register its handler.
+        - New style: OP_NAME + handle
+        - Old style: function named like default_op_name
+        """
+        try:
+            mod = __import__(f"{__name__}.{module_name}", fromlist=[module_name])
+            if hasattr(mod, "OP_NAME") and hasattr(mod, "handle"):
+                register_op(getattr(mod, "OP_NAME"), getattr(mod, "handle"))
+                return
+            # old-style function name matches the op name
+            if hasattr(mod, default_op_name):
+                register_op(default_op_name, getattr(mod, default_op_name))
+                return
+        except Exception:
+            # Don't kill the agent just because one op is broken.
+            pass
 
-    # ---- map_summarize ----
-    try:
-        from . import map_summarize as ms  # type: ignore
+    # Existing lite ops
+    _try_register("map_classify", "map_classify")
+    _try_register("map_summarize", "map_summarize")
 
-        if hasattr(ms, "OP_NAME") and hasattr(ms, "handle"):
-            register_op(ms.OP_NAME, ms.handle)
-        elif hasattr(ms, "map_summarize"):
-            register_op("map_summarize", ms.map_summarize)  # old-style
-    except Exception:
-        # Same idea: summarization wiring issues shouldn't kill the agent.
-        pass
+    # Added lite-safe ops
+    _try_register("csv_shard", "csv_shard")
+    _try_register("fibonacci", "fibonacci")
+    _try_register("prime_factor", "prime_factor")
 
 
 _safe_register_builtins()
