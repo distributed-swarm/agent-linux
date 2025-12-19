@@ -3,10 +3,8 @@ import time
 import socket
 import signal
 import threading
-import json
-import platform
-from datetime import datetime
-from typing import Optional, List, Dict, Any, Tuple
+from pathlib import Path
+from typing import List, Dict, Any
 
 import requests
 
@@ -16,7 +14,23 @@ except ImportError:
     psutil = None
 
 # =========================
-#   CONFIG
+#   ADMIN / SERVICE LOGGING
+# =========================
+
+PROGRAM_DATA_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "AgentLite"
+PROGRAM_DATA_DIR.mkdir(parents=True, exist_ok=True)
+AGENT_LOG_FILE = PROGRAM_DATA_DIR / "agent.log"
+
+_log_lock = threading.Lock()
+
+def log(msg: str):
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{ts} [agent] {msg}\n"
+    with _log_lock:
+        AGENT_LOG_FILE.open("a", encoding="utf-8").write(line)
+
+# =========================
+#   CONFIG (NO PROMPTS)
 # =========================
 
 CONTROLLER_URL = os.getenv("CONTROLLER_URL", "http://controller:8080").rstrip("/")
@@ -26,23 +40,22 @@ AGENT_VERSION = os.getenv("AGENT_VERSION", "lite")
 HEARTBEAT_SEC = float(os.getenv("HEARTBEAT_SEC", "5"))
 HTTP_TIMEOUT_SEC = float(os.getenv("HTTP_TIMEOUT_SEC", "3"))
 
-# "Lite" guardrails
+# Lite guardrails
 BUSY_CPU_THRESHOLD = float(os.getenv("BUSY_CPU_THRESHOLD", "75"))  # percent
-DISABLE_ON_BATTERY = os.getenv("DISABLE_ON_BATTERY", "0").strip() in ("1", "true", "True", "yes", "YES")
+DISABLE_ON_BATTERY = os.getenv("DISABLE_ON_BATTERY", "0").strip().lower() in ("1", "true", "yes")
 
 # Tokenize/chunk config
 CHUNK_BYTES = int(os.getenv("CHUNK_BYTES", "2048"))
 
-# Cache-ish size classes (you mentioned L2/L3 thinking)
-L2_TARGET_BYTES = int(os.getenv("L2_TARGET_BYTES", str(256 * 1024)))     # 256KB
-L3_TARGET_BYTES = int(os.getenv("L3_TARGET_BYTES", str(8 * 1024 * 1024))) # 8MB
+# Cache-ish size classes
+L2_TARGET_BYTES = int(os.getenv("L2_TARGET_BYTES", str(256 * 1024)))       # 256KB
+L3_TARGET_BYTES = int(os.getenv("L3_TARGET_BYTES", str(8 * 1024 * 1024)))  # 8MB
 
-SAFE_MAX_BYTES = int(os.getenv("SAFE_MAX_BYTES", str(2 * 1024 * 1024)))  # 2MB soft
-HARD_MAX_BYTES = int(os.getenv("HARD_MAX_BYTES", str(8 * 1024 * 1024)))  # 8MB hard (route to heavy)
+SAFE_MAX_BYTES = int(os.getenv("SAFE_MAX_BYTES", str(2 * 1024 * 1024)))    # 2MB soft
+HARD_MAX_BYTES = int(os.getenv("HARD_MAX_BYTES", str(8 * 1024 * 1024)))    # 8MB hard (route to heavy)
 
 AGENT_LABELS_RAW = os.getenv("AGENT_LABELS", "")
 
-# Worker profile (controller can use this for scheduling/routing)
 WORKER_PROFILE: Dict[str, Any] = {
     "profile": "lite",
     "limits": {
@@ -62,7 +75,7 @@ CAPABILITIES: Dict[str, Any] = {
     "cpu": True,
     "gpu": False,
     "disk_io": False,
-    "net_io": True,  # controller comms
+    "net_io": True,
 }
 
 BASE_LABELS: Dict[str, Any] = {
@@ -84,14 +97,9 @@ if AGENT_LABELS_RAW.strip():
 # =========================
 
 def op_echo(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Required for speed tests / sanity checks."""
     return {"ok": True, "echo": payload}
 
 def op_map_tokenize(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Bread-and-butter tokenize: simple whitespace tokenize + chunking.
-    Cache-friendly. No external deps.
-    """
     text = str(payload.get("text", ""))
     tokens = text.split()
 
@@ -115,9 +123,6 @@ _POSITIVE_WORDS = {"good", "great", "excellent", "awesome", "love", "like"}
 _NEGATIVE_WORDS = {"bad", "terrible", "awful", "hate", "dislike"}
 
 def op_map_classify(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Lite classifier: deterministic keyword heuristic (no ML deps).
-    """
     text = str(payload.get("text", "")).strip()
     if not text:
         return {"ok": True, "label": "NEUTRAL", "score": 0.0}
@@ -137,9 +142,6 @@ def op_map_classify(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "label": label, "score": score, "pos_hits": pos_hits, "neg_hits": neg_hits}
 
 def op_map_route(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Route suggestion op: keep lite work inside size limits.
-    """
     limits = WORKER_PROFILE.get("limits", {})
     max_bytes = int(limits.get("max_payload_bytes", SAFE_MAX_BYTES))
 
@@ -161,16 +163,11 @@ def op_map_route(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "route": f"local_{size_class}", "reason": "within_cpu_limits"}
 
 def op_fibonacci(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Lite-safe fibonacci: iterative, bounded.
-    payload: { "n": int }
-    """
     try:
         n = int(payload.get("n", 0))
     except Exception:
         return {"ok": False, "error": "invalid_n"}
 
-    # Hard cap to keep this lite-safe
     if n < 0:
         return {"ok": False, "error": "n_must_be_nonnegative"}
     if n > 200000:
@@ -182,10 +179,6 @@ def op_fibonacci(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "n": n, "value": a}
 
 def op_prime_factor(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Lite-safe prime factorization: trial division with caps.
-    payload: { "n": int }
-    """
     try:
         n = int(payload.get("n", 0))
     except Exception:
@@ -194,7 +187,6 @@ def op_prime_factor(payload: Dict[str, Any]) -> Dict[str, Any]:
     if n <= 1:
         return {"ok": True, "n": n, "factors": []}
 
-    # Cap to avoid pathological runtimes on lite endpoints
     if n > 10**12:
         return {"ok": False, "error": "n_too_large_for_lite"}
 
@@ -206,7 +198,6 @@ def op_prime_factor(payload: Dict[str, Any]) -> Dict[str, Any]:
         x //= 2
 
     f = 3
-    # simple guardrail on iterations
     steps = 0
     max_steps = 5_000_000
 
@@ -225,21 +216,11 @@ def op_prime_factor(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "n": n, "factors": factors}
 
 def op_csv_shard(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Lite CSV sharding: operates on CSV text (no disk).
-    payload:
-      - csv_text: str   (preferred)
-      - text: str       (fallback)
-      - shard_index: int (0-based)
-      - shard_count: int
-      - has_header: bool (default True)
-    """
     csv_text = payload.get("csv_text")
     if csv_text is None:
         csv_text = payload.get("text", "")
     csv_text = str(csv_text)
 
-    # Hard cap input size for lite
     b = len(csv_text.encode("utf-8", errors="ignore"))
     if b > SAFE_MAX_BYTES:
         return {"ok": False, "error": "csv_text_too_large_for_lite", "bytes": b, "max_bytes": SAFE_MAX_BYTES}
@@ -274,7 +255,6 @@ def op_csv_shard(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     out = "\n".join(out_lines)
 
-    # Cap output too
     out_b = len(out.encode("utf-8", errors="ignore"))
     if out_b > SAFE_MAX_BYTES:
         return {"ok": False, "error": "csv_shard_output_too_large_for_lite", "bytes": out_b, "max_bytes": SAFE_MAX_BYTES}
@@ -334,7 +314,6 @@ def _collect_metrics() -> Dict[str, Any]:
     return metrics
 
 def system_allows_work() -> bool:
-    """Returns False if the machine is busy or on battery (if enabled)."""
     if not psutil:
         return True
 
@@ -352,36 +331,60 @@ def system_allows_work() -> bool:
     return True
 
 # =========================
-#   NETWORKING
+#   NETWORKING (API PATH AUTO-DETECT)
 # =========================
 
-def _post_json(path: str, payload: Dict[str, Any]):
-    try:
-        r = requests.post(f"{CONTROLLER_URL}{path}", json=payload, timeout=HTTP_TIMEOUT_SEC)
-        r.raise_for_status()
-        return r.json() if r.content else None
-    except Exception:
-        return None
+_session = requests.Session()
 
-def _get_json(path: str, params: Dict[str, Any]):
+def _request_json(method: str, path: str, *, json_payload=None, params=None):
+    url = f"{CONTROLLER_URL}{path}"
     try:
-        r = requests.get(f"{CONTROLLER_URL}{path}", params=params, timeout=HTTP_TIMEOUT_SEC)
+        r = _session.request(method, url, json=json_payload, params=params, timeout=HTTP_TIMEOUT_SEC)
         if r.status_code == 204:
             return None
         r.raise_for_status()
         return r.json() if r.content else None
-    except Exception:
+    except Exception as e:
+        log(f"request failed {method} {path} err={type(e).__name__}:{e}")
         return None
 
+def _post_json(path: str, payload: Dict[str, Any]):
+    return _request_json("POST", path, json_payload=payload)
+
+def _get_json(path: str, params: Dict[str, Any]):
+    return _request_json("GET", path, params=params)
+
+# Prefer /api/* paths; fallback to legacy paths if needed
+PATHS = {
+    "register": ["/api/agents/register", "/agents/register"],
+    "heartbeat": ["/api/agents/heartbeat", "/agents/heartbeat"],
+    "task": ["/api/task", "/task"],
+    "result": ["/api/result", "/result", "/api/results", "/results"],
+}
+
+def _try_paths(key: str, fn, *args, **kwargs):
+    for p in PATHS[key]:
+        out = fn(p, *args, **kwargs)
+        # for GET /task, None is valid (no task), so we can't treat it as failure
+        if key == "task":
+            return out, p
+        if out is not None:
+            return out, p
+    return None, None
+
 def register_agent():
-    print(f"[*] Registering {AGENT_NAME}...")
-    _post_json("/agents/register", {
+    payload = {
         "agent": AGENT_NAME,
         "labels": BASE_LABELS,
         "capabilities": CAPABILITIES,
         "worker_profile": WORKER_PROFILE,
         "metrics": _collect_metrics(),
-    })
+    }
+    _, used = _try_paths("register", _post_json, payload)
+    if used:
+        log(f"registered via {used} agent={AGENT_NAME}")
+    else:
+        log("register failed on all known paths")
 
 # =========================
 #   WORK LOOP
@@ -391,12 +394,13 @@ _running = True
 
 def worker_loop():
     global _running
+
     while _running:
         if not system_allows_work():
             time.sleep(0.5)
             continue
 
-        task = _get_json("/task", {"agent": AGENT_NAME})
+        task, _ = _try_paths("task", _get_json, {"agent": AGENT_NAME})
         if not task:
             time.sleep(0.05)
             continue
@@ -404,9 +408,11 @@ def worker_loop():
         try:
             op = task.get("op")
             payload = task.get("payload", {}) or {}
+            task_id = task.get("id")
+
             if op not in OPS:
-                _post_json("/result", {
-                    "id": task.get("id"),
+                _try_paths("result", _post_json, {
+                    "id": task_id,
                     "agent": AGENT_NAME,
                     "ok": False,
                     "result": None,
@@ -421,8 +427,8 @@ def worker_loop():
             ok = bool(res.get("ok", True))
 
             _record_task_result(duration, ok)
-            _post_json("/result", {
-                "id": task.get("id"),
+            _try_paths("result", _post_json, {
+                "id": task_id,
                 "agent": AGENT_NAME,
                 "ok": ok,
                 "result": res if ok else None,
@@ -431,7 +437,7 @@ def worker_loop():
             })
         except Exception as e:
             _record_task_result(0.0, False)
-            _post_json("/result", {
+            _try_paths("result", _post_json, {
                 "id": task.get("id"),
                 "agent": AGENT_NAME,
                 "ok": False,
@@ -446,28 +452,33 @@ def worker_loop():
 
 def _stop(*_args, **_kwargs):
     global _running
-    print("[agent] stop signal received, shutting down...")
     _running = False
+    log("stop signal received")
 
 signal.signal(signal.SIGINT, _stop)
 signal.signal(signal.SIGTERM, _stop)
 
 def main():
+    log(f"starting agent name={AGENT_NAME} controller={CONTROLLER_URL}")
     register_agent()
 
     def _hb_loop():
         while _running:
-            _post_json("/agents/heartbeat", {
+            payload = {
                 "agent": AGENT_NAME,
                 "labels": BASE_LABELS,
                 "capabilities": CAPABILITIES,
                 "worker_profile": WORKER_PROFILE,
                 "metrics": _collect_metrics(),
-            })
+            }
+            _, used = _try_paths("heartbeat", _post_json, payload)
+            if not used:
+                log("heartbeat failed on all known paths")
             time.sleep(HEARTBEAT_SEC)
 
     threading.Thread(target=_hb_loop, daemon=True).start()
     worker_loop()
+    log("agent exiting")
 
 if __name__ == "__main__":
     main()
