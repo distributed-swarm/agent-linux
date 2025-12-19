@@ -14,6 +14,7 @@ jobs:
   smoke:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
 
@@ -24,16 +25,16 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Import smoke test (headless-safe)
+      - name: Import smoke test (core)
         run: |
-          python -c "import requests, psutil; from PIL import Image; print('core imports OK')"
+          python -c "import requests, psutil; print('core imports ok')"
 
-      - name: Import tray deps (Windows only)
+      - name: Import smoke test (service deps, Windows only)
         if: runner.os == 'Windows'
         run: |
-          python -c "import pystray; print('pystray OK on Windows')"
+          python -c "import win32serviceutil; print('pywin32 ok')"
