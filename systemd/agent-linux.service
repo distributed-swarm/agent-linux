@@ -5,19 +5,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-
-# IMPORTANT:
-# Edit these two lines after copying to the device, if needed.
-User=pi
-WorkingDirectory=/home/pi/agent-linux
-
 Environment=PYTHONUNBUFFERED=1
-
-# Use .venv consistently (matches our Linux install steps)
-ExecStart=/home/pi/agent-linux/.venv/bin/python /home/pi/agent-linux/app.py
-
 Restart=always
 RestartSec=2
+
+# ---- EDIT THESE 3 LINES ON THE TARGET LINUX MACHINE ----
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/agent-linux
+ExecStart=/home/YOUR_USER/agent-linux/.venv/bin/python /home/YOUR_USER/agent-linux/app.py
+# --------------------------------------------------------
 
 [Install]
 WantedBy=multi-user.target
